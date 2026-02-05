@@ -2,11 +2,13 @@ const express = require('express');
 const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
 const pino = require('pino');
-const fs = require('fs');
+const cors = require('cors'); // <--- NEW LINE 1
 
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Enable CORS for ALL websites (Fixes your error)
+app.use(cors()); // <--- NEW LINE 2
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -15,14 +17,12 @@ let qrCodeData = null;
 let isConnected = false;
 
 async function startWhatsApp() {
-    // Save login credentials to a folder named 'auth_info'
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
 
     sock = makeWASocket({
         auth: state,
-        // printQRInTerminal: true, <--- DELETED THIS LINE TO FIX WARNING
-        logger: pino({ level: 'silent' }), // Hide debug logs
-        browser: ["FiveMojo", "Chrome", "1.0.0"] // Fakes a browser signature
+        logger: pino({ level: 'silent' }),
+        browser: ["VisionPoint", "Chrome", "1.0.0"]
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -32,7 +32,6 @@ async function startWhatsApp() {
 
         if (qr) {
             console.log('NEW QR CODE RECEIVED');
-            // We capture the QR here for your PHP site
             qrcode.toDataURL(qr, (err, url) => {
                 qrCodeData = url;
             });
@@ -47,7 +46,7 @@ async function startWhatsApp() {
                 startWhatsApp();
             } else {
                 console.log('Logged out. Delete auth_info folder to re-scan.');
-                qrCodeData = null; // Clear QR data
+                qrCodeData = null;
             }
         } else if (connection === 'open') {
             console.log('WhatsApp Connected Successfully!');
@@ -57,12 +56,15 @@ async function startWhatsApp() {
     });
 }
 
-// Start the bot
 startWhatsApp();
 
 // ---------------------------------------------------------
 // API ROUTES
 // ---------------------------------------------------------
+
+app.get('/', (req, res) => {
+    res.send('<h1>WhatsApp Bridge is Running! 🚀</h1>');
+});
 
 app.get('/status', (req, res) => {
     res.json({
@@ -83,7 +85,6 @@ app.post('/send-message', async (req, res) => {
     }
 
     try {
-        // Format number: '919876543210' -> '919876543210@s.whatsapp.net'
         const cleanNumber = number.replace(/[^0-9]/g, '');
         const jid = cleanNumber + "@s.whatsapp.net";
 
