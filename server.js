@@ -1,116 +1,103 @@
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
-const puppeteer = require('puppeteer'); 
-const app = express();
+const pino = require('pino');
+const fs = require('fs');
 
-// Render sets the PORT environment variable automatically
+const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+let sock;
 let qrCodeData = null;
-let isReady = false;
+let isConnected = false;
 
-// ---------------------------------------------------------
-// WHATSAPP CLIENT CONFIGURATION
-// ---------------------------------------------------------
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process', 
-            '--disable-gpu'
-        ],
-        // FIX FOR RENDER: Use the path from environment variable or default
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath()
-    }
-});
+async function startWhatsApp() {
+    // Save login credentials to a folder named 'auth_info'
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
 
-// ---------------------------------------------------------
-// EVENT LISTENERS
-// ---------------------------------------------------------
-
-// Generate QR Code when needed
-client.on('qr', (qr) => {
-    console.log('QR RECEIVED', qr);
-    // Convert QR text to Data URL for easy display in your PHP app
-    qrcode.toDataURL(qr, (err, url) => {
-        qrCodeData = url;
+    sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true, // Prints QR to logs as backup
+        logger: pino({ level: 'silent' }), // Hide debug logs
+        browser: ["FiveMojo", "Chrome", "1.0.0"] // Fakes a browser signature
     });
-});
 
-// Log when client is ready
-client.on('ready', () => {
-    console.log('Client is ready!');
-    isReady = true;
-    qrCodeData = null; // Clear QR code since we are logged in
-});
+    sock.ev.on('creds.update', saveCreds);
 
-// Handle disconnection
-client.on('disconnected', (reason) => {
-    console.log('Client disconnected:', reason);
-    isReady = false;
-    client.initialize(); // Auto-reconnect
-});
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-client.initialize();
+        if (qr) {
+            console.log('NEW QR CODE RECEIVED');
+            // Convert QR to Image Data for your PHP App
+            qrcode.toDataURL(qr, (err, url) => {
+                qrCodeData = url;
+            });
+        }
+
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed. Reconnecting:', shouldReconnect);
+            isConnected = false;
+            // Auto-reconnect unless logged out
+            if (shouldReconnect) {
+                startWhatsApp();
+            } else {
+                console.log('Logged out. Delete auth_info folder to re-scan.');
+            }
+        } else if (connection === 'open') {
+            console.log('WhatsApp Connected Successfully!');
+            isConnected = true;
+            qrCodeData = null;
+        }
+    });
+}
+
+// Start the bot
+startWhatsApp();
 
 // ---------------------------------------------------------
-// API ROUTES
+// API ROUTES (Compatible with your PHP Script)
 // ---------------------------------------------------------
 
-// 1. Status Endpoint (For your PHP "Tab 4" to display QR)
+// 1. Status Check
 app.get('/status', (req, res) => {
     res.json({
-        connected: isReady,
+        connected: isConnected,
         qr: qrCodeData
     });
 });
 
-// 2. Send Message Endpoint (Called by your PHP Sms_model.php)
+// 2. Send Message
 app.post('/send-message', async (req, res) => {
-    if (!isReady) {
-        return res.status(500).json({ 
-            status: 'error', 
-            message: 'WhatsApp Client is not ready. Please scan QR code first.' 
-        });
+    if (!isConnected) {
+        return res.status(500).json({ status: 'error', message: 'WhatsApp not connected' });
     }
 
     const { number, message } = req.body;
 
     if (!number || !message) {
-        return res.status(400).json({ 
-            status: 'error', 
-            message: 'Missing number or message' 
-        });
+        return res.status(400).json({ status: 'error', message: 'Missing number or message' });
     }
 
-    // 3. Number Formatting
-    // Remove non-digits and append the suffix required by WhatsApp Web
-    const chatId = number.replace(/[^0-9]/g, '') + "@c.us";
-
     try {
-        await client.sendMessage(chatId, message);
-        console.log(`Message sent to ${chatId}`);
-        res.json({ status: 'success', message: 'Message sent successfully' });
+        // Format number: '919876543210' -> '919876543210@s.whatsapp.net'
+        const cleanNumber = number.replace(/[^0-9]/g, '');
+        const jid = cleanNumber + "@s.whatsapp.net";
+
+        await sock.sendMessage(jid, { text: message });
+        
+        console.log(`Message sent to ${jid}`);
+        res.json({ status: 'success' });
     } catch (error) {
-        console.error('Failed to send message:', error);
+        console.error('Send failed:', error);
         res.status(500).json({ status: 'error', message: error.toString() });
     }
 });
 
-// ---------------------------------------------------------
-// START SERVER
-// ---------------------------------------------------------
 app.listen(port, () => {
-    console.log(`WhatsApp Bridge running on port ${port}`);
+    console.log(`Baileys Bridge running on port ${port}`);
 });
