@@ -97,7 +97,33 @@ app.post('/send-message', async (req, res) => {
         res.status(500).json({ status: 'error', message: error.toString() });
     }
 });
+// 3. Reset/Logout Route (Fixes stuck sessions)
+app.get('/reset', async (req, res) => {
+    try {
+        console.log('Resetting session...');
+        // Stop the current socket
+        if (sock) {
+            sock.end(undefined);
+        }
+        
+        // Delete the session folder
+        const fs = require('fs');
+        if (fs.existsSync('auth_info')) {
+            fs.rmSync('auth_info', { recursive: true, force: true });
+        }
 
+        // Reset variables
+        isConnected = false;
+        qrCodeData = null;
+
+        // Restart the bot
+        startWhatsApp();
+        
+        res.json({ status: 'success', message: 'Session reset. Wait 10s for new QR.' });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.toString() });
+    }
+});
 app.listen(port, () => {
     console.log(`Baileys Bridge running on port ${port}`);
 });
