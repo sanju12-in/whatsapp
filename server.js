@@ -17,13 +17,15 @@ let qrCodeData = null;
 let isConnected = false;
 
 async function startWhatsApp() {
+    console.log('Starting WhatsApp Client...');
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
 
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true, // Print to logs so we can see if it's working there
+        // printQRInTerminal: true, <--- DELETED THIS LINE (Fixes your error)
         logger: pino({ level: 'silent' }),
-        // REMOVED custom browser name to fix connection loop
+        browser: ["VisionPoint", "Chrome", "1.0.0"], // Browser name
+        connectTimeoutMs: 60000, // Wait longer for connection
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -32,7 +34,8 @@ async function startWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('NEW QR CODE GENERATED'); // Watch for this in Render Logs
+            console.log('>>> NEW QR CODE GENERATED <<<'); 
+            // Convert QR to image immediately
             qrcode.toDataURL(qr, (err, url) => {
                 qrCodeData = url;
             });
@@ -44,20 +47,21 @@ async function startWhatsApp() {
             isConnected = false;
             
             if (shouldReconnect) {
-                // Wait 2 seconds before reconnecting to prevent rapid loops
+                // Wait 2 seconds before reconnecting
                 setTimeout(startWhatsApp, 2000);
             } else {
                 console.log('Logged out. Session cleared.');
                 qrCodeData = null;
             }
         } else if (connection === 'open') {
-            console.log('WhatsApp Connected Successfully!');
+            console.log('>>> WhatsApp Connected Successfully! <<<');
             isConnected = true;
             qrCodeData = null;
         }
     });
 }
 
+// Start the bot immediately
 startWhatsApp();
 
 // ---------------------------------------------------------
@@ -75,32 +79,29 @@ app.get('/status', (req, res) => {
     });
 });
 
-// HARD RESET ROUTE
+// HARD RESET - Use this if QR doesn't show
 app.get('/reset', async (req, res) => {
     try {
         console.log('Force Resetting Session...');
-        
-        // 1. Close existing connection
         if (sock) {
             sock.end(undefined);
             sock = null;
         }
         
-        // 2. Delete auth folder physically
+        // Delete the session folder
         if (fs.existsSync('auth_info')) {
             fs.rmSync('auth_info', { recursive: true, force: true });
         }
 
-        // 3. Clear variables
         isConnected = false;
         qrCodeData = null;
 
-        // 4. Restart immediately
+        // Restart
         setTimeout(() => {
             startWhatsApp();
-        }, 2000); // Wait 2 seconds before restarting
+        }, 2000);
         
-        res.json({ status: 'success', message: 'Session deleted. New QR incoming in 10s...' });
+        res.json({ status: 'success', message: 'Session deleted. Wait 10s for new QR.' });
     } catch (error) {
         res.status(500).json({ status: 'error', message: error.toString() });
     }
@@ -110,17 +111,13 @@ app.post('/send-message', async (req, res) => {
     if (!isConnected) {
         return res.status(500).json({ status: 'error', message: 'WhatsApp not connected' });
     }
-
     const { number, message } = req.body;
-
     if (!number || !message) {
         return res.status(400).json({ status: 'error', message: 'Missing number or message' });
     }
-
     try {
         const cleanNumber = number.replace(/[^0-9]/g, '');
         const jid = cleanNumber + "@s.whatsapp.net";
-
         await sock.sendMessage(jid, { text: message });
         res.json({ status: 'success' });
     } catch (error) {
