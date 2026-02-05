@@ -20,7 +20,7 @@ async function startWhatsApp() {
 
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true, // Prints QR to logs as backup
+        // printQRInTerminal: true, <--- DELETED THIS LINE TO FIX WARNING
         logger: pino({ level: 'silent' }), // Hide debug logs
         browser: ["FiveMojo", "Chrome", "1.0.0"] // Fakes a browser signature
     });
@@ -32,7 +32,7 @@ async function startWhatsApp() {
 
         if (qr) {
             console.log('NEW QR CODE RECEIVED');
-            // Convert QR to Image Data for your PHP App
+            // We capture the QR here for your PHP site
             qrcode.toDataURL(qr, (err, url) => {
                 qrCodeData = url;
             });
@@ -42,11 +42,12 @@ async function startWhatsApp() {
             const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reconnecting:', shouldReconnect);
             isConnected = false;
-            // Auto-reconnect unless logged out
+            
             if (shouldReconnect) {
                 startWhatsApp();
             } else {
                 console.log('Logged out. Delete auth_info folder to re-scan.');
+                qrCodeData = null; // Clear QR data
             }
         } else if (connection === 'open') {
             console.log('WhatsApp Connected Successfully!');
@@ -60,10 +61,9 @@ async function startWhatsApp() {
 startWhatsApp();
 
 // ---------------------------------------------------------
-// API ROUTES (Compatible with your PHP Script)
+// API ROUTES
 // ---------------------------------------------------------
 
-// 1. Status Check
 app.get('/status', (req, res) => {
     res.json({
         connected: isConnected,
@@ -71,7 +71,6 @@ app.get('/status', (req, res) => {
     });
 });
 
-// 2. Send Message
 app.post('/send-message', async (req, res) => {
     if (!isConnected) {
         return res.status(500).json({ status: 'error', message: 'WhatsApp not connected' });
