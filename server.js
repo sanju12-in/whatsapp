@@ -15,24 +15,31 @@ app.use(express.urlencoded({ extended: true }));
 let sock;
 let qrCodeData = null;
 let isConnected = false;
+let statusText = "Initializing..."; // <--- NEW: Tracks exactly what the bot is doing
 
-// --- NUCLEAR OPTION: WIPE SESSION ON BOOT ---
-// This deletes the broken login files every time the server starts.
-console.log('>>> SYSTEM STARTUP: Cleaning old session files... <<<');
+// --- AUTO-WIPE ON STARTUP ---
+// Ensures no bad session files exist when the server wakes up
 if (fs.existsSync('auth_info')) {
-    fs.rmSync('auth_info', { recursive: true, force: true });
-    console.log('>>> Old session deleted. Ready for new QR. <<<');
+    try {
+        fs.rmSync('auth_info', { recursive: true, force: true });
+        console.log('>>> Session wiped on boot. <<<');
+    } catch (e) {
+        console.error('Wipe failed:', e);
+    }
 }
-// ---------------------------------------------
+// ----------------------------
 
 async function startWhatsApp() {
-    console.log('Starting WhatsApp Client...');
+    statusText = "Starting WhatsApp Client...";
+    console.log(statusText);
+    
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
 
     sock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
-        browser: ["VisionPoint", "Chrome", "1.0.0"],
+        // USE STANDARD BROWSER SIGNATURE TO PREVENT BLOCKS
+        browser: ["Ubuntu", "Chrome", "20.0.04"], 
         connectTimeoutMs: 60000, 
     });
 
@@ -42,6 +49,7 @@ async function startWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
+            statusText = "QR Code Generated! Waiting for scan...";
             console.log('>>> NEW QR CODE GENERATED <<<'); 
             qrcode.toDataURL(qr, (err, url) => {
                 qrCodeData = url;
@@ -49,25 +57,26 @@ async function startWhatsApp() {
         }
 
         if (connection === 'close') {
-            // If connection closes, DO NOT reconnect automatically if logged out.
-            // This prevents the "Loop of Death".
             const reason = (lastDisconnect.error)?.output?.statusCode;
-            console.log(`Connection closed. Reason: ${reason}`);
+            statusText = `Connection Closed. Reason: ${reason}`;
+            console.log(statusText);
 
             if (reason === DisconnectReason.loggedOut || reason === 401) {
-                console.log('Session invalid. Deleting and restarting...');
+                console.log('Session invalid. Wiping...');
                 if (fs.existsSync('auth_info')) {
                     fs.rmSync('auth_info', { recursive: true, force: true });
                 }
                 isConnected = false;
                 qrCodeData = null;
-                setTimeout(startWhatsApp, 2000); // Restart fresh
+                setTimeout(startWhatsApp, 2000); 
             } else {
-                // Only reconnect for minor network errors
-                console.log('Minor disconnect. Reconnecting...');
+                statusText = "Reconnecting...";
                 startWhatsApp(); 
             }
+        } else if (connection === 'connecting') {
+            statusText = "Connecting to WhatsApp servers...";
         } else if (connection === 'open') {
+            statusText = "Connected!";
             console.log('>>> WhatsApp Connected Successfully! <<<');
             isConnected = true;
             qrCodeData = null;
@@ -75,7 +84,6 @@ async function startWhatsApp() {
     });
 }
 
-// Start the bot
 startWhatsApp();
 
 // ---------------------------------------------------------
@@ -83,18 +91,21 @@ startWhatsApp();
 // ---------------------------------------------------------
 
 app.get('/', (req, res) => {
-    res.send('<h1>WhatsApp Bridge is Running! 🚀</h1>');
+    res.send(`<h1>WhatsApp Bridge is Running!</h1><p>Current Status: <b>${statusText}</b></p>`);
 });
 
+// UPDATED STATUS ENDPOINT
 app.get('/status', (req, res) => {
     res.json({
         connected: isConnected,
-        qr: qrCodeData
+        qr: qrCodeData,
+        message: statusText // <--- Now you can see this in your browser
     });
 });
 
 app.get('/reset', async (req, res) => {
     try {
+        statusText = "Resetting...";
         if (sock) { sock.end(undefined); }
         if (fs.existsSync('auth_info')) {
             fs.rmSync('auth_info', { recursive: true, force: true });
@@ -102,7 +113,7 @@ app.get('/reset', async (req, res) => {
         isConnected = false;
         qrCodeData = null;
         setTimeout(startWhatsApp, 2000);
-        res.json({ status: 'success', message: 'Reset complete.' });
+        res.json({ status: 'success', message: 'Reset complete. Wait 10s.' });
     } catch (error) {
         res.status(500).json({ status: 'error', message: error.toString() });
     }
