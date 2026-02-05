@@ -2,13 +2,13 @@ const express = require('express');
 const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
 const pino = require('pino');
-const cors = require('cors'); // <--- NEW LINE 1
+const cors = require('cors');
+const fs = require('fs');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Enable CORS for ALL websites (Fixes your error)
-app.use(cors()); // <--- NEW LINE 2
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -21,8 +21,9 @@ async function startWhatsApp() {
 
     sock = makeWASocket({
         auth: state,
+        printQRInTerminal: true, // Print to logs so we can see if it's working there
         logger: pino({ level: 'silent' }),
-        browser: ["VisionPoint", "Chrome", "1.0.0"]
+        // REMOVED custom browser name to fix connection loop
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -31,7 +32,7 @@ async function startWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('NEW QR CODE RECEIVED');
+            console.log('NEW QR CODE GENERATED'); // Watch for this in Render Logs
             qrcode.toDataURL(qr, (err, url) => {
                 qrCodeData = url;
             });
@@ -43,9 +44,10 @@ async function startWhatsApp() {
             isConnected = false;
             
             if (shouldReconnect) {
-                startWhatsApp();
+                // Wait 2 seconds before reconnecting to prevent rapid loops
+                setTimeout(startWhatsApp, 2000);
             } else {
-                console.log('Logged out. Delete auth_info folder to re-scan.');
+                console.log('Logged out. Session cleared.');
                 qrCodeData = null;
             }
         } else if (connection === 'open') {
@@ -73,6 +75,37 @@ app.get('/status', (req, res) => {
     });
 });
 
+// HARD RESET ROUTE
+app.get('/reset', async (req, res) => {
+    try {
+        console.log('Force Resetting Session...');
+        
+        // 1. Close existing connection
+        if (sock) {
+            sock.end(undefined);
+            sock = null;
+        }
+        
+        // 2. Delete auth folder physically
+        if (fs.existsSync('auth_info')) {
+            fs.rmSync('auth_info', { recursive: true, force: true });
+        }
+
+        // 3. Clear variables
+        isConnected = false;
+        qrCodeData = null;
+
+        // 4. Restart immediately
+        setTimeout(() => {
+            startWhatsApp();
+        }, 2000); // Wait 2 seconds before restarting
+        
+        res.json({ status: 'success', message: 'Session deleted. New QR incoming in 10s...' });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.toString() });
+    }
+});
+
 app.post('/send-message', async (req, res) => {
     if (!isConnected) {
         return res.status(500).json({ status: 'error', message: 'WhatsApp not connected' });
@@ -89,41 +122,12 @@ app.post('/send-message', async (req, res) => {
         const jid = cleanNumber + "@s.whatsapp.net";
 
         await sock.sendMessage(jid, { text: message });
-        
-        console.log(`Message sent to ${jid}`);
         res.json({ status: 'success' });
     } catch (error) {
-        console.error('Send failed:', error);
         res.status(500).json({ status: 'error', message: error.toString() });
     }
 });
-// 3. Reset/Logout Route (Fixes stuck sessions)
-app.get('/reset', async (req, res) => {
-    try {
-        console.log('Resetting session...');
-        // Stop the current socket
-        if (sock) {
-            sock.end(undefined);
-        }
-        
-        // Delete the session folder
-        const fs = require('fs');
-        if (fs.existsSync('auth_info')) {
-            fs.rmSync('auth_info', { recursive: true, force: true });
-        }
 
-        // Reset variables
-        isConnected = false;
-        qrCodeData = null;
-
-        // Restart the bot
-        startWhatsApp();
-        
-        res.json({ status: 'success', message: 'Session reset. Wait 10s for new QR.' });
-    } catch (error) {
-        res.status(500).json({ status: 'error', message: error.toString() });
-    }
-});
 app.listen(port, () => {
     console.log(`Baileys Bridge running on port ${port}`);
 });
