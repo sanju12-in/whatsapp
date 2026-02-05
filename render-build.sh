@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Install dependencies
-npm install
+# Exit on error
+set -o errexit
 
-# Download Chrome for Puppeteer
+npm install
+# Force Puppeteer to download Chrome
 npx puppeteer browsers install chrome
